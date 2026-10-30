@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(herd php artisan route:list --except-vendor --columns=method,uri,name 2>&1)",
+      "PowerShell(herd php artisan route:list --except-vendor 2>&1)"
+    ]
+  }
+}

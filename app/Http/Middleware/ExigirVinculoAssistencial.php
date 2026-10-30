@@ -1,0 +1,150 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Middleware;
+
+use App\Models\Aprazamento;
+use App\Models\Atendimento;
+use App\Models\ExameAnexo;
+use App\Models\ExameResultado;
+use App\Models\ExameSolicitacao;
+use App\Models\Paciente;
+use App\Models\Prescricao;
+use App\Services\Auditoria\AuditoriaService;
+use Closure;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Gate;
+use Inertia\Inertia;
+use Symfony\Component\HttpFoundation\Response;
+
+/**
+ * RN-28: acesso a paciente sem vínculo assistencial exige justificativa registrada --
+ * o padrão "break the glass", exigível pela LGPD sob o princípio da necessidade
+ * (art. 6º, III).
+ *
+ * O desenho é deliberadamente permissivo e integralmente auditado: quem justifica,
+ * entra. Bloquear de fato seria pior -- o profissional que precisa do dado numa
+ * emergência encontraria um caminho fora do sistema, e aí não haveria registro nenhum.
+ * O controle aqui não é a porta, é a câmera.
+ */
+final class ExigirVinculoAssistencial
+{
+    public function __construct(private readonly AuditoriaService $auditoria) {}
+
+    public function handle(Request $request, Closure $next): Response
+    {
+        $paciente = $this->pacienteDaRota($request);
+        $usuario = $request->user();
+
+        if ($paciente === null || $usuario === null) {
+            return $next($request);
+        }
+
+        // Vínculo assistencial existente: caminho normal, sem fricção.
+        if (Gate::forUser($usuario)->allows('verContexto', $paciente)) {
+            return $next($request);
+        }
+
+        $pendente = $request->session()->pull('quebra_sigilo.pendente');
+        $justificativa = trim((string) $request->input('justificativa_quebra_sigilo', ''));
+        if (is_array($pendente)
+            && ($pendente['paciente_id'] ?? null) === $paciente->user_id
+            && ($pendente['destino'] ?? null) === $request->fullUrl()) {
+            $justificativa = trim((string) ($pendente['justificativa'] ?? ''));
+        }
+
+        if ($justificativa === '') {
+            $this->auditoria->registrar(
+                acao: 'prontuario.quebra_sigilo.negada',
+                paciente: $paciente,
+                entidade: 'Paciente',
+                entidadeId: $paciente->user_id,
+            );
+
+            $request->session()->put('quebra_sigilo.solicitacao', [
+                'destino' => $request->fullUrl(),
+                'paciente_id' => $paciente->user_id,
+            ]);
+
+            return Inertia::render('Prontuario/QuebraSigilo', [
+                'paciente' => ['nome' => $paciente->nomeExibicao()],
+            ])->toResponse($request)->setStatusCode(403);
+        }
+
+        if (Gate::forUser($usuario)->denies('quebrarSigilo', $paciente)) {
+            $this->auditoria->registrar(
+                acao: 'prontuario.quebra_sigilo.negada',
+                paciente: $paciente,
+                entidade: 'Paciente',
+                entidadeId: $paciente->user_id,
+                justificativa: $justificativa,
+            );
+
+            abort(403, 'Você não tem permissão para quebra de sigilo.');
+        }
+
+        $this->auditoria->registrar(
+            acao: 'prontuario.quebra_sigilo',
+            paciente: $paciente,
+            entidade: 'Paciente',
+            entidadeId: $paciente->user_id,
+            justificativa: $justificativa,
+        );
+
+        // Deixa a justificativa disponível para o RegistrarAuditoria da mesma requisição.
+        $request->session()->flash('justificativa_quebra_sigilo', $justificativa);
+
+        return $next($request);
+    }
+
+    /**
+     * O paciente da rota, direto ou pelo atendimento.
+     *
+     * RN-28 protege o prontuário, e o prontuário é acessado pelas duas formas de rota:
+     * `pacientes/{paciente}/prontuario` e `atendimentos/{atendimento}/prontuario`.
+     * Resolver só a primeira deixaria a segunda -- justamente a que o plantão usa o dia
+     * inteiro -- fora do break the glass.
+     */
+    private function pacienteDaRota(Request $request): ?Paciente
+    {
+        $paciente = $request->route('paciente');
+
+        if ($paciente instanceof Paciente) {
+            return $paciente;
+        }
+
+        $atendimento = $request->route('atendimento');
+
+        if ($atendimento instanceof Atendimento) {
+            return $atendimento->paciente;
+        }
+
+        $prescricao = $request->route('prescricao');
+        if ($prescricao instanceof Prescricao) {
+            return $prescricao->atendimento->paciente;
+        }
+
+        $aprazamento = $request->route('aprazamento');
+        if ($aprazamento instanceof Aprazamento) {
+            return $aprazamento->prescricaoItem->prescricao->atendimento->paciente;
+        }
+
+        $solicitacao = $request->route('solicitacao');
+        if ($solicitacao instanceof ExameSolicitacao) {
+            return $solicitacao->atendimento->paciente;
+        }
+
+        $resultado = $request->route('resultado');
+        if ($resultado instanceof ExameResultado) {
+            return $resultado->solicitacao->atendimento->paciente;
+        }
+
+        $anexo = $request->route('anexo');
+        if ($anexo instanceof ExameAnexo) {
+            return $anexo->resultado->solicitacao->atendimento->paciente;
+        }
+
+        return null;
+    }
+}

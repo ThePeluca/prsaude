@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+>
+    <testsuites>
+        <testsuite name="Unit">
+            <directory>tests/Unit</directory>
+        </testsuite>
+        <testsuite name="Feature">
+            <directory>tests/Feature</directory>
+        </testsuite>
+    </testsuites>
+    <source>
+        <include>
+            <!-- RNF-19 mede o núcleo de domínio, não controllers nem infraestrutura. -->
+            <directory>app/Actions</directory>
+            <directory>app/Services</directory>
+            <directory>app/Enums</directory>
+        </include>
+    </source>
+    <php>
+        <env name="APP_ENV" value="testing"/>
+        <env name="APP_MAINTENANCE_DRIVER" value="file"/>
+        <env name="BCRYPT_ROUNDS" value="4"/>
+        <!-- RNF-07 usa Argon2id com 64 MiB por hash. Na suite, o minimo aceito pelo
+             PHP (8 KiB / 1 iteracao): o algoritmo continua sendo o mesmo, so o custo
+             cai. Sem isso, cada usuario criado por factory custaria ~50 ms. -->
+        <env name="ARGON_MEMORY" value="8"/>
+        <env name="ARGON_TIME" value="1"/>
+        <env name="ARGON_THREADS" value="1"/>
+        <!-- Chave fixa na suite: os testes de token precisam de resultado deterministico
+             para provar que uma assinatura de outra chave e recusada (doc 8.2.1). -->
+        <env name="PULSEIRA_KEY" value="base64:c2doLXRlc3RlLXB1bHNlaXJhLWtleS1uYW8tdXNhcg=="/>
+        <env name="CACHE_STORE" value="array"/>
+        <!-- As invariantes criticas do SGH sao garantidas pelo banco, nao pela aplicacao:
+             as 18 restricoes CHECK, a coluna gerada ativo_key (RN-07/D-07) e as UNIQUE KEY
+             de RN-20. SQLite in-memory nao reproduz nenhuma delas, entao a suite roda no
+             mesmo MySQL do desenvolvimento, em um schema proprio. Ver docs/DECISOES.md D-13. -->
+        <env name="DB_DATABASE" value="prsaude_test"/>
+        <env name="MAIL_MAILER" value="array"/>
+        <env name="PULSE_ENABLED" value="false"/>
+        <env name="QUEUE_CONNECTION" value="sync"/>
+        <env name="SESSION_DRIVER" value="array"/>
+        <env name="TELESCOPE_ENABLED" value="false"/>
+    </php>
+</phpunit>
